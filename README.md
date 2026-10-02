@@ -1,4 +1,4 @@
-# Team154-log(n) | IIT Kanpur | APAC Quant Trading Hackathon 2026
+# Team154-log(n) APAC Quant Trading Hackathon 2026
 
 > **Strategy:** RSI(14) + EMA(9/21) Crossover with Long & Short positions  
 > **Platform:** Roostoo Mock Exchange | **Cloud:** AWS EC2 ap-southeast-2  

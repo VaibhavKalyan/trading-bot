@@ -79,9 +79,13 @@ def get_ticker(pair: str = None) -> dict:
     if pair:
         params["pair"] = pair
 
+    # FIX #8: include API key header — Roostoo's RCL_TSCheck endpoints require it
+    headers = {"RST-API-KEY": config.API_KEY}
+
     resp = requests.get(
         f"{BASE_URL}/v3/ticker",
         params=params,
+        headers=headers,
         timeout=10,
     )
     resp.raise_for_status()

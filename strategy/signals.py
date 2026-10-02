@@ -95,9 +95,11 @@ def generate_signal(df: pd.DataFrame) -> dict:
         result["signal"] = BUY
         logger.info(f"BUY signal  | RSI={rsi_now:.1f} | EMA_S={es_now:.2f} > EMA_L={el_now:.2f}")
 
-    elif (not uptrend and rsi_now > config.RSI_OVERBOUGHT) or ema_bearish_cross:
+    # FIX #2: SELL when RSI overbought OR EMA bearish cross (regardless of trend direction)
+    # The old condition wrongly required "not uptrend" which overlapped with SHORT_OPEN logic.
+    elif rsi_now > config.RSI_OVERBOUGHT or ema_bearish_cross:
         result["signal"] = SELL
-        logger.info(f"SELL signal | RSI={rsi_now:.1f} | uptrend={uptrend}")
+        logger.info(f"SELL signal | RSI={rsi_now:.1f} | ema_bearish_cross={ema_bearish_cross}")
 
     # ── SHORT signals ─────────────────────────────────────────────────────────
     elif downtrend and rsi_dropping_down:

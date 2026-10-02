@@ -10,6 +10,13 @@ What it does every LOOP_INTERVAL seconds:
   4. Execute BUY / SELL / SHORT_OPEN / SHORT_CLOSE orders
   5. Check global drawdown — halt if breached
   6. Log everything
+
+Fixes applied:
+  - FIX #1: RiskManager now loads saved positions from disk on startup
+  - FIX #3: usd_free re-fetched from real wallet after each successful BUY
+  - FIX #5: ATR passed to record_entry() for dynamic stop-loss sizing
+  - FIX #6: SELL signal only executes if we actually hold the position
+  - FIX #7: Cooldown set after every stop-loss to prevent immediate re-entry
 """
 import time
 import logging
@@ -65,13 +72,15 @@ def run():
         logger.warning(f"Could not fetch exchange info ({e}), using config pairs")
         pairs = config.TRADE_PAIRS
 
-    # Get initial portfolio value
+    # FIX #1: RiskManager now auto-loads saved state from risk_state.json on init.
+    # If the bot restarts mid-competition, all open positions and the peak
+    # portfolio value are restored from disk automatically.
     try:
         wallet   = rc.get_balance()
         ticker   = rc.get_ticker()
         risk_mgr = RiskManager(initial_usd=100_000.0)
         init_val = risk_mgr.portfolio_value(wallet, ticker)
-        logger.info(f"💰 Initial portfolio value: ${init_val:,.2f}")
+        logger.info(f"💰 Portfolio value on startup: ${init_val:,.2f}")
     except Exception as e:
         logger.error(f"Could not get initial balance: {e}")
         risk_mgr = RiskManager()
@@ -86,8 +95,8 @@ def run():
 
         try:
             # ── Step 1: Fetch live market data ────────────────────────────────
-            ticker = rc.get_ticker()
-            wallet = rc.get_balance()
+            ticker   = rc.get_ticker()
+            wallet   = rc.get_balance()
             usd_free = wallet.get("USD", {}).get("Free", 0.0)
 
             current_value = risk_mgr.portfolio_value(wallet, ticker)
@@ -108,6 +117,7 @@ def run():
                         result = rc.place_order(pair, "SELL", qty)
                         if result.get("Success"):
                             risk_mgr.clear_position(pair)
+                            risk_mgr.set_cooldown(pair)  # FIX #7: prevent immediate re-buy
 
             for pair in list(risk_mgr.short_positions.keys()):
                 price = get_live_price(pair, ticker)
@@ -116,6 +126,7 @@ def run():
                     result  = rc.close_short(pair, pos_qty)
                     if result.get("Success"):
                         risk_mgr.clear_short_position(pair)
+                        risk_mgr.set_cooldown(pair)  # FIX #7
 
             # ── Step 4: Signal generation & order execution ───────────────────
             for pair in pairs:
@@ -124,13 +135,15 @@ def run():
                     if df.empty:
                         continue
 
-                    sig = generate_signal(df)
+                    sig   = generate_signal(df)
                     price = get_live_price(pair, ticker)
+                    atr   = sig.get("atr")  # FIX #5: used for ATR-based stop-loss
 
                     logger.info(
                         f"{pair} | signal={sig['signal']} | "
                         f"price=${price:.4f} | RSI={sig['rsi']} | "
-                        f"EMA_S={sig['ema_short']} EMA_L={sig['ema_long']}"
+                        f"EMA_S={sig['ema_short']} EMA_L={sig['ema_long']} | "
+                        f"ATR={sig['atr']}"
                     )
 
                     if sig["signal"] == BUY:
@@ -138,22 +151,29 @@ def run():
                         if qty > 0:
                             result = rc.place_order(pair, "BUY", qty)
                             if result.get("Success"):
-                                risk_mgr.record_entry(pair, qty, price)
-                                usd_free -= qty * price  # update local estimate
+                                risk_mgr.record_entry(pair, qty, price, atr=atr)  # FIX #5
+                                # FIX #3: re-fetch real wallet instead of guessing
+                                try:
+                                    wallet   = rc.get_balance()
+                                    usd_free = wallet.get("USD", {}).get("Free", 0.0)
+                                except Exception:
+                                    usd_free -= qty * price  # fallback estimate
 
                     elif sig["signal"] == SELL:
-                        qty = risk_mgr.calc_sell_quantity(pair, wallet)
-                        if qty > 0:
-                            result = rc.place_order(pair, "SELL", qty)
-                            if result.get("Success"):
-                                risk_mgr.clear_position(pair)
+                        # FIX #6: only attempt SELL if we actually hold a long position
+                        if pair in risk_mgr.positions:
+                            qty = risk_mgr.calc_sell_quantity(pair, wallet)
+                            if qty > 0:
+                                result = rc.place_order(pair, "SELL", qty)
+                                if result.get("Success"):
+                                    risk_mgr.clear_position(pair)
 
                     elif sig["signal"] == SHORT_OPEN:
                         qty = risk_mgr.calc_short_quantity(pair, price, usd_free)
                         if qty > 0:
                             result = rc.open_short(pair, qty)
                             if result.get("Success"):
-                                risk_mgr.record_short_entry(pair, qty, price)
+                                risk_mgr.record_short_entry(pair, qty, price, atr=atr)  # FIX #5
 
                     elif sig["signal"] == SHORT_CLOSE:
                         if pair in risk_mgr.short_positions:
